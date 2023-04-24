@@ -10,24 +10,78 @@ using Microsoft.Win32;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using System.IO;
-
+using Newtonsoft.Json;
+using NetMQ;
+using NetMQ.Sockets;
 
 namespace CSharpETW
 {
     using NTKeywords = KernelTraceEventParser.Keywords;
-    
+    class ETWRecords
+    {
+        //obj.EventName, obj.ProcessID, obj.ProcessName, obj.KeyHandle, fullKeyName
+        public string EventName { get; set; }
+        public int ProcessID { get; set; }
+        public string ProcessName { get; set; }
+        public ulong KeyHandle { get; set; }
+        public string FullKeyName { get; set; }
+
+    }
+
     class ETWTrace
     {
         private static Dictionary<UInt64, String> KeyHandle2KeyName = new Dictionary<UInt64, String>() { };
-        public static int pid = Process.GetCurrentProcess().Id;
-        public double MonitorTimeInSeconds = 1;
+        private static readonly int pid = Process.GetCurrentProcess().Id;
+        private static readonly double MonitorTimeInSeconds = 1;
+        public static bool existed = false;
         //public ETWTrace instnace = new ETWTrace();
-        public static Boolean ProcessFilter(RegistryTraceData obj)
+        private static object lockObject = new object();
+        private PublisherSocket pubSocket;
+        private static readonly int port = 5556;
+        private static readonly string url = $"tcp://localhost:{port}";
+        private static readonly List<string> blackList = new List<string>() { 
+            "svchost"
+        };
+       public ETWTrace()
         {
-            return obj.ProcessID!=pid;
+            Console.WriteLine("Publisher socket Binding...");
+            this.pubSocket = new PublisherSocket();
+            pubSocket.Bind(url);
+
+        }
+        public void SocketPublisher(ETWRecords records)
+        {
+            lock (lockObject)
+            {
+               
+                Console.WriteLine("Publisher socket Connecting...");
+
+                pubSocket.Options.SendHighWatermark = 1000;
+                   
+                string jsonData = JsonConvert.SerializeObject(records);
+                Console.WriteLine(jsonData);
+                pubSocket.SendMoreFrame("").SendFrame(jsonData);
+                //Thread.Sleep(100);
+                                     
+            }
+            
+            /*
+            string jsonData = JsonConvert.SerializeObject(records);
+            Console.WriteLine(jsonData);
+            pubSocket.SendMoreFrame("").SendFrame(jsonData);
+            Thread.Sleep(10);
+            */
+         
         }
 
-        public static void MakeKernelParserStateless(ETWTraceEventSource source)
+        //whitelist
+        public Boolean ProcessFilter(RegistryTraceData obj)
+        {
+            
+            return obj.ProcessID!=pid && !blackList.Contains(obj.ProcessName);
+        }
+
+        public void MakeKernelParserStateless(ETWTraceEventSource source)
         {
             var options = KernelTraceEventParser.ParserTrackingOptions.None;
             var kernelParser = new KernelTraceEventParser(source,options);
@@ -41,6 +95,7 @@ namespace CSharpETW
             Console.WriteLine("Starting rundown session: {0}", sessionName);
             while (!stop)
             {
+                
                 using (TraceEventSession session = new TraceEventSession(sessionName))
                 {
                     session.EnableKernelProvider(NTKeywords.Registry, NTKeywords.None);
@@ -71,10 +126,11 @@ namespace CSharpETW
                     session.Source.Process();
 
                 }
+                
                          
             }
         }
-        public static String GetFullName(UInt64 keyHandle, String keyName)
+        public String GetFullName(UInt64 keyHandle, String keyName)
         {
             var baseKeyName = KeyHandle2KeyName.ContainsKey(keyHandle) ? KeyHandle2KeyName[keyHandle] : "";
             var CombineName = Path.Combine(baseKeyName, keyName);
@@ -85,113 +141,133 @@ namespace CSharpETW
         }
 
 
-        private static void GeneralKeyCallBack(RegistryTraceData obj)
+        private void GeneralKeyCallBack(RegistryTraceData obj)
         {
-            if (ProcessFilter(obj))
+            if (!ProcessFilter(obj))
             {
-                var fullKeyName = GetFullName(obj.KeyHandle, obj.KeyName);
-                Console.WriteLine(
-                "EventName:{0} \t PID: {1} \t ProcessName: {2} \t KeyHandle: 0x{3:X} \t KeyName: {4}",
-                obj.EventName, obj.ProcessID, obj.ProcessName, obj.KeyHandle, fullKeyName
-                );
+                return;
             }
+
+            var fullKeyName = GetFullName(obj.KeyHandle, obj.KeyName);
+            Console.WriteLine(
+            "EventName:{0} \t PID: {1} \t ProcessName: {2} \t KeyHandle: 0x{3:X} \t KeyName: {4}",
+            obj.EventName, obj.ProcessID, obj.ProcessName, obj.KeyHandle, fullKeyName
+            );
+
             
         }
-        private static void GeneralValueCallBack(RegistryTraceData obj)
+        private void GeneralValueCallBack(RegistryTraceData obj)
         {
-
-            if (ProcessFilter(obj))
+            if (!ProcessFilter(obj))
             {
-                var fullKeyName = GetFullName(obj.KeyHandle, obj.KeyName);
-
-                if (fullKeyName.Contains("HKEY_CLASSES_ROOT"))
-                {
-                    if (OperatingSystem.IsWindows())
-                    {
-                        RegistryKey regKey = Registry.ClassesRoot.OpenSubKey(fullKeyName.Substring("HKEY_CLASSES_ROOT".Length + 1));
-                        if (regKey != null)
-                        {
-                            var res = regKey.GetValue(obj.ValueName);
-                            if (res != null)
-                            {
-                                Console.WriteLine("Find Value !!");
-                            }
-
-
-                        }
-                    }
-                }
-                else if (fullKeyName.Contains("HKEY_CURRENT_USER"))
-                {
-                    if (OperatingSystem.IsWindows())
-                    {
-                        RegistryKey regKey = Registry.CurrentUser.OpenSubKey(fullKeyName.Substring("HKEY_CURRENT_USER".Length + 1));
-                        if (regKey != null)
-                        {
-                            var res = regKey.GetValue(obj.ValueName);
-                            if (res != null)
-                            {
-                                Console.WriteLine("Find Value !!");
-                            }
-                        }
-                    }
-                }
-                else if (fullKeyName.Contains("HKEY_LOCAL_MACHINE"))
-                {
-                    if (OperatingSystem.IsWindows())
-                    {
-                        RegistryKey regKey = Registry.LocalMachine.OpenSubKey(fullKeyName.Substring("HKEY_LOCAL_MACHINE".Length + 1));
-                        if (regKey != null)
-                        {
-                            var res = regKey.GetValue(obj.ValueName);
-                            if (res != null)
-                            {
-                                Console.WriteLine("Find Value !!");
-                            }
-                        }
-
-                    }
-                }
-                else if (fullKeyName.Contains("HKEY_USERS"))
-                {
-                    if (OperatingSystem.IsWindows())
-                    {
-                        RegistryKey regKey = Registry.Users.OpenSubKey(fullKeyName.Substring("HKEY_USERS".Length + 1));
-                        if (regKey != null)
-                        {
-                            var res = regKey.GetValue(obj.ValueName);
-                            if (res != null)
-                            {
-                                Console.WriteLine("Find Value !!");
-                            }
-                        }
-                    }
-                }
-                else if (fullKeyName.Contains("HKEY_CURRENT_CONFIG"))
-                {
-                    if (OperatingSystem.IsWindows())
-                    {
-                        RegistryKey regKey = Registry.CurrentConfig.OpenSubKey(fullKeyName.Substring("HKEY_CURRENT_CONFIG".Length + 1));
-                        if (regKey != null)
-                        {
-                            var res = regKey.GetValue(obj.ValueName);
-                            if (res != null)
-                            {
-                                Console.WriteLine("Find Value !!");
-                            }
-                        }
-                    }
-                }
-                  
-                Console.WriteLine(
-                "EventName:{0} \t PID: {1} \t ProcessName: {2} \t KeyHandle: 0x{3:X} \t KeyName: {4}",
-                obj.EventName, obj.ProcessID, obj.ProcessName, obj.KeyHandle, fullKeyName
-                );
-                
+                return;
             }
+           
+            var fullKeyName = GetFullName(obj.KeyHandle, obj.KeyName);
+
+            if (fullKeyName.Contains("HKEY_CLASSES_ROOT"))
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    RegistryKey regKey = Registry.ClassesRoot.OpenSubKey(fullKeyName.Substring("HKEY_CLASSES_ROOT".Length + 1));
+                    if (regKey != null)
+                    {
+                        var res = regKey.GetValue(obj.ValueName);
+                        if (res != null)
+                        {
+                            Console.WriteLine("Find Value !!");
+                            existed = true;
+                        }
+                    }
+                }
+            }
+            else if (fullKeyName.Contains("HKEY_CURRENT_USER"))
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    RegistryKey regKey = Registry.CurrentUser.OpenSubKey(fullKeyName.Substring("HKEY_CURRENT_USER".Length + 1));
+                    if (regKey != null)
+                    {
+                        var res = regKey.GetValue(obj.ValueName);
+                        if (res != null)
+                        {
+                            Console.WriteLine("Find Value !!");
+                            existed = true;
+                        }
+                    }
+                }
+            }
+            else if (fullKeyName.Contains("HKEY_LOCAL_MACHINE"))
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    RegistryKey regKey = Registry.LocalMachine.OpenSubKey(fullKeyName.Substring("HKEY_LOCAL_MACHINE".Length + 1));
+                    if (regKey != null)
+                    {
+                        var res = regKey.GetValue(obj.ValueName);
+                        if (res != null)
+                        {
+                            Console.WriteLine("Find Value !!");
+                            existed = true;
+                        }
+                    }
+
+                }
+            }
+            else if (fullKeyName.Contains("HKEY_USERS"))
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    RegistryKey regKey = Registry.Users.OpenSubKey(fullKeyName.Substring("HKEY_USERS".Length + 1));
+                    if (regKey != null)
+                    {
+                        var res = regKey.GetValue(obj.ValueName);
+                        if (res != null)
+                        {
+                            Console.WriteLine("Find Value !!");
+                            existed = true;
+                        }
+                    }
+                }
+            }
+            else if (fullKeyName.Contains("HKEY_CURRENT_CONFIG"))
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    RegistryKey regKey = Registry.CurrentConfig.OpenSubKey(fullKeyName.Substring("HKEY_CURRENT_CONFIG".Length + 1));
+                    if (regKey != null)
+                    {
+                        var res = regKey.GetValue(obj.ValueName);
+                        if (res != null)
+                        {
+                            Console.WriteLine("Find Value !!");
+                            existed = true;
+                        }
+                    }
+                }
+            }
+
+            if (existed)
+            {
+                ETWRecords records = new ETWRecords(){ EventName=obj.EventName, ProcessID=obj.ProcessID, ProcessName=obj.ProcessName, KeyHandle=obj.KeyHandle, FullKeyName=fullKeyName};
+                SocketPublisher(records);
+                existed = false;
+            }
+            /*
+            Console.WriteLine(
+            "EventName:{0} \t PID: {1} \t ProcessName: {2} \t KeyHandle: 0x{3:X} \t KeyName: {4}",
+            obj.EventName, obj.ProcessID, obj.ProcessName, obj.KeyHandle, fullKeyName
+            );*/
+
+                
+            
         }
-        private static void KCBCreate(RegistryTraceData obj)
+        private void KCBCreate(RegistryTraceData obj)
         {
+            if(!ProcessFilter(obj))
+            {
+                return;
+            }
             /*
             Console.WriteLine(
                 "EventName:{0} \t KeyHandle: 0x{1:X} \t KeyName: {2}",
@@ -207,8 +283,12 @@ namespace CSharpETW
             }
             
         }
-        private static void KCBDelete(RegistryTraceData obj)
+        private void KCBDelete(RegistryTraceData obj)
         {
+            if (!ProcessFilter(obj))
+            {
+                return;
+            }
             Console.WriteLine(
                 "EventName:{0} \t KeyHandle: 0x{1:X} \t KeyName: {2}",
                 obj.EventName, obj.KeyHandle, obj.KeyName
@@ -244,6 +324,8 @@ namespace CSharpETW
 
                 token.Register(() => {
                     session.Stop();
+                    Console.WriteLine("Publisher socket Disconnecting...");
+                    pubSocket.Dispose();
                     });
                 /*
                 var timer = new Timer(delegate (object state)
@@ -261,6 +343,7 @@ namespace CSharpETW
             
         }
     }
+
     class Program
     {
 
@@ -273,6 +356,7 @@ namespace CSharpETW
                 Console.WriteLine("Cancel Session");
                 cts.Cancel();
                 eventArgs.Cancel = true;
+                
             };
            
             ETWTrace trace = new ETWTrace();
