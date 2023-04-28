@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.Reflection;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Session;
@@ -13,7 +14,7 @@ using System.IO;
 using Newtonsoft.Json;
 using NetMQ;
 using NetMQ.Sockets;
-using System.Threading.Tasks;
+
 
 namespace CSharpETW
 {
@@ -67,21 +68,14 @@ namespace CSharpETW
                 //Thread.Sleep(100);
                                      
             }
-            
-            /*
-            string jsonData = JsonConvert.SerializeObject(records);
-            Console.WriteLine(jsonData);
-            pubSocket.SendMoreFrame("").SendFrame(jsonData);
-            Thread.Sleep(10);
-            */
-         
+                    
         }
 
         //whitelist
         public Boolean ProcessFilter(RegistryTraceData obj)
         {
-            
-            return obj.ProcessID!=pid && !blackList.Contains(obj.ProcessName);
+            return obj.ProcessID == pid;
+            //return obj.ProcessID!=pid && !blackList.Contains(obj.ProcessName);
         }
 
         public void MakeKernelParserStateless(ETWTraceEventSource source)
@@ -95,6 +89,7 @@ namespace CSharpETW
         public void RunDownSession(String sessionName, CancellationToken token)
         {
             var stop = false;
+            bool doOnce = true;
             Console.WriteLine("Starting rundown session: {0}", sessionName);
             while (!stop)
             {
@@ -107,19 +102,18 @@ namespace CSharpETW
                     session.Source.Kernel.RegistryKCBRundownBegin += KCBCreate;
                     session.Source.Kernel.RegistryKCBRundownEnd += KCBCreate;
 
-                    /*CancellationTokenSource cts = new CancellationTokenSource();
-
-                    _ = cts.Token.Register(() =>
+                    if (doOnce)
                     {
-                        session.Stop();
-                    });*/
-                    token.Register(() =>
-                    {
-                        Console.WriteLine("RunDown stop!!");
-                        session.Stop();
-                        session.Dispose();
-                        stop = true;
-                    });
+                        token.Register(() =>
+                        {
+                            Console.WriteLine("RunDown stop!!");
+                            session.Stop();
+                            session.Dispose();
+                            stop = true;
+                        });
+                        doOnce = false;
+                    }
+                    
                     var timer = new Timer(delegate (object state)
                     {
                         Console.WriteLine("Timer crontab exec!!");
@@ -129,8 +123,7 @@ namespace CSharpETW
                     session.Source.Process();
 
                 }
-                
-                         
+                                         
             }
         }
         public String GetFullName(UInt64 keyHandle, String keyName)
@@ -154,9 +147,7 @@ namespace CSharpETW
             Console.WriteLine(
             "EventName:{0} \t PID: {1} \t ProcessName: {2} \t KeyHandle: 0x{3:X} \t KeyName: {4}",
             obj.EventName, obj.ProcessID, obj.ProcessName, obj.KeyHandle, fullKeyName
-            );
-
-            
+            );         
         }
         private void GeneralValueCallBack(RegistryTraceData obj)
         {
@@ -293,15 +284,11 @@ namespace CSharpETW
 
         private void KCBCreate(RegistryTraceData obj)
         {
-            if(!ProcessFilter(obj))
-            {
-                return;
-            }
             /*
             Console.WriteLine(
-                "EventName:{0} \t KeyHandle: 0x{1:X} \t KeyName: {2}",
-                obj.EventName, obj.KeyHandle, obj.KeyName
-                );
+              "EventName:{0} \t KeyHandle: 0x{1:X} \t KeyName: {2} \t ProcessName: {3}",
+              obj.EventName, obj.KeyHandle, obj.KeyName, obj.ProcessName
+              );
             */
             if (KeyHandle2KeyName.ContainsKey(obj.KeyHandle)){
                 KeyHandle2KeyName[obj.KeyHandle] = obj.KeyName;
@@ -314,14 +301,12 @@ namespace CSharpETW
         }
         private void KCBDelete(RegistryTraceData obj)
         {
-            if (!ProcessFilter(obj))
-            {
-                return;
-            }
+            /*
             Console.WriteLine(
                 "EventName:{0} \t KeyHandle: 0x{1:X} \t KeyName: {2}",
                 obj.EventName, obj.KeyHandle, obj.KeyName
                 );
+            */
             KeyHandle2KeyName.Remove(obj.KeyHandle);
         }
 
@@ -342,11 +327,8 @@ namespace CSharpETW
                     );
 
                 MakeKernelParserStateless(session.Source);
-                //Task t1 = new Task(()=>RunDownSession(sessionName + "_RunDown", token));
-                //t1.Start();
-                Thread t1 = new Thread(new ThreadStart(()=> RunDownSession(sessionName + "_RunDown", token)));
-                t1.Start();
-               
+                Task t1 =  Task.Run(()=>RunDownSession(sessionName + "_RunDown", token));
+
                 session.Source.Kernel.RegistryKCBCreate += KCBCreate;
                 session.Source.Kernel.RegistryKCBDelete += KCBDelete;
                 //session.Source.Kernel.RegistryOpen += GeneralKeyCallBack;
@@ -357,17 +339,16 @@ namespace CSharpETW
                     Console.WriteLine("Publisher socket Disconnecting...");
                     pubSocket.Dispose();
                     });
-
+                
                 session.Source.Process();
-                t1.Join();
-                //t1.Wait();
+                t1.Wait();
                 Console.WriteLine("Session Stop!!");
 
             }
             
         }
     }
-
+    
     class Program
     {
 
@@ -386,7 +367,26 @@ namespace CSharpETW
 
                 ETWTrace trace = new ETWTrace();
 
-                trace.StartSession(cts.Token);
+                Task task = Task.Run(()=> trace.StartSession(cts.Token));
+
+                Thread.Sleep(1000);
+
+                /*do Testing here*/
+                Console.WriteLine("Test Start!!");
+                if (OperatingSystem.IsWindows())
+                {
+                    Console.WriteLine("Write Key");
+                    RegistryKey registryKey = Registry.LocalMachine.CreateSubKey(@"SOFTWARE\RegistryKeyTest");
+                    
+                    registryKey.SetValue("Path", @"printf(""helloworld""))");
+                }
+                task.Wait();
+                if (OperatingSystem.IsWindows())
+                {
+                    Registry.LocalMachine.DeleteSubKeyTree(@"SOFTWARE\RegistryKeyTest");
+                }
+                
+
             }
            
             
