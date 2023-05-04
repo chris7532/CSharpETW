@@ -23,11 +23,12 @@ namespace CSharpETW
     class ETWRecords
     {
         //obj.EventName, obj.ProcessID, obj.ProcessName, obj.KeyHandle, fullKeyName
+        public string EventTime { get; set; }
         public string EventName { get; set; }
         public int ProcessID { get; set; }
         public string ProcessName { get; set; }
         public string ImagePath { get; set; }
-        public ulong KeyHandle { get; set; }
+        public string KeyHandle { get; set; }
         public string FullKeyName { get; set; }
         public string ValueName { get; set; }
         public string Value { get; set; }
@@ -76,6 +77,7 @@ namespace CSharpETW
              userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
              userRegPath + @"\AAAA\RegistryKeyTest"
         };
+
         public ETWTrace()
         {
             Console.WriteLine("Publisher socket Binding...");
@@ -92,7 +94,7 @@ namespace CSharpETW
 
                 pubSocket.Options.SendHighWatermark = 1000;
                 
-                string jsonData = JsonConvert.SerializeObject(records);
+                string jsonData = JsonConvert.SerializeObject(records, Formatting.Indented);
                 Console.WriteLine(jsonData);
                 pubSocket.SendMoreFrame("").SendFrame(jsonData);
                 //Thread.Sleep(100);
@@ -154,6 +156,7 @@ namespace CSharpETW
                         session.Stop();
                     }, null, (int)(MonitorTimeInSeconds * 1000), Timeout.Infinite);
 
+               
                     session.Source.Process();
 
                 }
@@ -188,11 +191,11 @@ namespace CSharpETW
             var fullKeyName = GetFullName(obj.KeyHandle, obj.KeyName);
 
             // testing filter
-            if (!ProcessFilter(obj) || !KeyFilter(fullKeyName))
+            if (!ProcessFilter(obj)) //|| !KeyFilter(fullKeyName))
             {
                 return;
             }
-
+ 
             /*
             if(!ProcessFilter(obj) && !KeyFilter(fullKeyName))
             {
@@ -203,7 +206,7 @@ namespace CSharpETW
             
             RegistryKey regKey = null;
             RegistryValueKind rvk;
-
+            
             if (fullKeyName.Contains("HKEY_LOCAL_MACHINE"))
             {
                 if (OperatingSystem.IsWindows())
@@ -249,7 +252,6 @@ namespace CSharpETW
                         }
                         if (value != null)
                         {
-
                             Console.WriteLine("Find Value !!");
                             existed = true;
                         }
@@ -257,12 +259,13 @@ namespace CSharpETW
                 }
             }
 
-
+            
             if (existed)
             {
+                string formattedEventTime = obj.TimeStamp.ToString("yyyy/MM/dd HH:mm:ss");
                 Process process = Process.GetProcessById(obj.ProcessID);
                 string processPath = process.MainModule.FileName;
-                ETWRecords records = new ETWRecords(){ EventName=obj.EventName, ProcessID=obj.ProcessID, ProcessName=obj.ProcessName, ImagePath=processPath, KeyHandle=obj.KeyHandle, FullKeyName=fullKeyName, ValueName=obj.ValueName, Value=value.ToString()};
+                ETWRecords records = new ETWRecords(){ EventName=obj.EventName, EventTime=formattedEventTime ,ProcessID=obj.ProcessID, ProcessName=obj.ProcessName, ImagePath=processPath, KeyHandle="0x" + obj.KeyHandle.ToString("X"), FullKeyName=fullKeyName, ValueName=obj.ValueName, Value=value.ToString()};
                 SocketPublisher(records);
                 existed = false;
             }
@@ -332,6 +335,8 @@ namespace CSharpETW
                     pubSocket.Dispose();
                     });
                 
+                
+                //Console.WriteLine(now.ToString("yyyy/MM/dd HH:mm:ss"));
                 session.Source.Process();
                 t1.Wait();
                 Console.WriteLine("Session Stop!!");
@@ -373,15 +378,25 @@ namespace CSharpETW
                 if (OperatingSystem.IsWindows())
                 {
                     Console.WriteLine("Write Key");
-                    RegistryKey registryKey = Registry.CurrentUser.CreateSubKey(@"AAAB\RegistryKeyTest");
-                    
+                    RegistryKey registryKey = Registry.CurrentUser.CreateSubKey(@"AAAA\RegistryKeyTest");
+                    string test = new string('a', 31);
                     registryKey.SetValue("Path", @"powershell -executionpolicy bypass -windowstyle hidden -command ""$a = Get-ItemProperty -Path HKLM:\\System\\a | %{$_.v}; powershell -executionpolicy bypass -windowstyle hidden -encodedcommand $a""");
+                    
+                    //registryKey.SetValue("Path", test);
+                    /*
+                    for (int i = 0; i < 11; i++)
+                    {
+                        Thread.Sleep(5000);
+                        //registryKey.SetValue("Path", @"");
+                        registryKey.SetValue("Path", @"powershell -executionpolicy bypass -windowstyle hidden -command ""$a = Get-ItemProperty -Path HKLM:\\System\\a | %{$_.v}; powershell -executionpolicy bypass -windowstyle hidden -encodedcommand $a""");
+                    }*/
                 }
+                
                 task.Wait();
                 if (OperatingSystem.IsWindows())
                 {
                     //Registry.ClassesRoot.DeleteSubKeyTree(@"AAAA\RegistryKeyTest");
-                    Registry.CurrentUser.DeleteSubKeyTree(@"AAAB");
+                    Registry.CurrentUser.DeleteSubKeyTree(@"AAAA");
                     cts.Cancel();
                 }
                 
