@@ -334,15 +334,50 @@ namespace CSharpETW
                     Console.WriteLine("Publisher socket Disconnecting...");
                     pubSocket.Dispose();
                     });
-                
-                
+
+
                 //Console.WriteLine(now.ToString("yyyy/MM/dd HH:mm:ss"));
+                /*
+                try
+                {
+                    await Task.Run(() => session.Source.Process());
+                }
+                catch (TaskCanceledException)
+                {
+                    Console.WriteLine("Session Cancelled!!");
+                }
+                */
                 session.Source.Process();
                 t1.Wait();
                 Console.WriteLine("Session Stop!!");
 
             }
             
+        }
+
+        public void DoTesting()
+        {
+            Dictionary<int, string> options = new Dictionary<int, string>()
+            {
+                {1, new string('a', 31)},
+                {2, @"powershell -executionpolicy bypass -windowstyle hidden -command ""$a = Get-ItemProperty -Path HKLM:\\System\\a | %{$_.v}; powershell -executionpolicy bypass -windowstyle hidden -encodedcommand $a"""}
+            };
+            if (OperatingSystem.IsWindows())
+            {
+                
+                
+                RegistryKey registryKey = Registry.CurrentUser.CreateSubKey(@"AAAA\RegistryKeyTest");
+                for (int i = 0; i < 11; i++)
+                {
+                    Thread.Sleep(5000);
+                    Random crandom = new Random();
+                    int choice = crandom.Next(1, 3);
+                    string chosenOption = options[choice];
+                    registryKey.SetValue("Path", chosenOption);
+                    
+                }
+            }
+
         }
     }
     
@@ -370,27 +405,16 @@ namespace CSharpETW
                 ETWTrace trace = new ETWTrace();
 
                 Task task = Task.Run(()=> trace.StartSession(cts.Token),cts.Token);
-
+                //Task task = trace.StartSession(cts.Token);
                 Thread.Sleep(1000);
 
                 /*do Testing here*/
                 Console.WriteLine("Test Start!!");
-                if (OperatingSystem.IsWindows())
-                {
-                    Console.WriteLine("Write Key");
-                    RegistryKey registryKey = Registry.CurrentUser.CreateSubKey(@"AAAA\RegistryKeyTest");
-                    string test = new string('a', 31);
-                    registryKey.SetValue("Path", @"powershell -executionpolicy bypass -windowstyle hidden -command ""$a = Get-ItemProperty -Path HKLM:\\System\\a | %{$_.v}; powershell -executionpolicy bypass -windowstyle hidden -encodedcommand $a""");
-                    
-                    //registryKey.SetValue("Path", test);
-                    /*
-                    for (int i = 0; i < 11; i++)
-                    {
-                        Thread.Sleep(5000);
-                        //registryKey.SetValue("Path", @"");
-                        registryKey.SetValue("Path", @"powershell -executionpolicy bypass -windowstyle hidden -command ""$a = Get-ItemProperty -Path HKLM:\\System\\a | %{$_.v}; powershell -executionpolicy bypass -windowstyle hidden -encodedcommand $a""");
-                    }*/
-                }
+
+                Console.WriteLine("Write Key");
+                Task test_task = Task.Run(() => trace.DoTesting(), cts.Token);
+
+
                 
                 task.Wait();
                 if (OperatingSystem.IsWindows())
