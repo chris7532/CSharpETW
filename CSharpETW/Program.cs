@@ -355,35 +355,67 @@ namespace CSharpETW
             
         }
 
-        public void DoTesting()
-        {
-            Dictionary<int, string> options = new Dictionary<int, string>()
+    }
+    class Test
+    {
+        public Dictionary<int, string> options_value = new Dictionary<int, string>()
             {
                 {1, new string('a', 31)},
                 {2, @"powershell -executionpolicy bypass -windowstyle hidden -command ""$a = Get-ItemProperty -Path HKLM:\\System\\a | %{$_.v}; powershell -executionpolicy bypass -windowstyle hidden -encodedcommand $a"""}
             };
+
+        public Dictionary<int, RegistryKey> options_key = new Dictionary<int, RegistryKey>();
+
+
+        public int[] numbers = new int[3];
+        public int[] numbers2 = new int[3];
+
+        public Test()
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                options_key[1] = Registry.LocalMachine.CreateSubKey(@"Software\RegistryKeyTest");
+                options_key[2] = Registry.CurrentUser.CreateSubKey(@"AAAA\RegistryKeyTest");
+            }
+        }
+        public void DoTesting()
+        {
+            Console.WriteLine("Test Start!!");
             if (OperatingSystem.IsWindows())
             {
                 
-                
-                RegistryKey registryKey = Registry.CurrentUser.CreateSubKey(@"AAAA\RegistryKeyTest");
-                for (int i = 0; i < 11; i++)
+                for (int i = 0; i < 200; i++)
                 {
                     Thread.Sleep(5000);
                     Random crandom = new Random();
-                    int choice = crandom.Next(1, 3);
-                    string chosenOption = options[choice];
-                    registryKey.SetValue("Path", chosenOption);
-                    
+                    // random value
+                    int choice_value = crandom.Next(1, 3);
+                    numbers[choice_value]++;
+                    string chosenOption = options_value[choice_value];
+                    // random key
+                    int choice_key = crandom.Next(1, 3);
+                    numbers2[choice_key]++;
+                    options_key[choice_key].SetValue("Path", chosenOption);
+
+                }
+                foreach(int num in numbers)
+                {
+                    Console.WriteLine(num);
+                }
+
+                Console.WriteLine("---------");
+
+                foreach (int num in numbers2)
+                {
+                    Console.WriteLine(num);
                 }
             }
-
+            Console.WriteLine("Stop");
+            Console.ReadLine();
         }
     }
-    
     class Program
     {
-
         static void Main(string[] args)
         {
 
@@ -405,21 +437,16 @@ namespace CSharpETW
                 ETWTrace trace = new ETWTrace();
 
                 Task task = Task.Run(()=> trace.StartSession(cts.Token),cts.Token);
-                //Task task = trace.StartSession(cts.Token);
                 Thread.Sleep(1000);
 
                 /*do Testing here*/
-                Console.WriteLine("Test Start!!");
-
-                Console.WriteLine("Write Key");
-                Task test_task = Task.Run(() => trace.DoTesting(), cts.Token);
-
-
-                
+                Test test = new Test();
+                Task test_task = Task.Run(() => test.DoTesting(), cts.Token);
+           
                 task.Wait();
                 if (OperatingSystem.IsWindows())
                 {
-                    //Registry.ClassesRoot.DeleteSubKeyTree(@"AAAA\RegistryKeyTest");
+                    Registry.LocalMachine.DeleteSubKey(@"Software\RegistryKeyTest");
                     Registry.CurrentUser.DeleteSubKeyTree(@"AAAA");
                     cts.Cancel();
                 }
