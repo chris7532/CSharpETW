@@ -15,7 +15,7 @@ using System.IO;
 using Newtonsoft.Json;
 using NetMQ;
 using NetMQ.Sockets;
-
+using System.Linq;
 
 namespace CSharpETW
 {
@@ -104,7 +104,8 @@ namespace CSharpETW
         }
         public bool KeyFilter(string keyPath)
         {
-            return importantKey.Contains(keyPath) ? true : false;
+
+            return importantKey.Contains(keyPath, StringComparer.OrdinalIgnoreCase) ? true : false;
             
         }
         //whitelist
@@ -190,8 +191,9 @@ namespace CSharpETW
         {
             var fullKeyName = GetFullName(obj.KeyHandle, obj.KeyName);
 
+
             // testing filter
-            if (!ProcessFilter(obj)) //|| !KeyFilter(fullKeyName))
+            if (!ProcessFilter(obj) && !KeyFilter(fullKeyName))
             {
                 return;
             }
@@ -203,10 +205,21 @@ namespace CSharpETW
             }
             */
             object value = null;
-            
+            string composite_sz = null;
             RegistryKey regKey = null;
             RegistryValueKind rvk;
-            
+            Process process = null;
+            string processPath = null;
+            try
+            {
+                process = Process.GetProcessById(obj.ProcessID);
+                processPath = process.MainModule.FileName;
+            }
+            catch(Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+            }
+
             if (fullKeyName.Contains("HKEY_LOCAL_MACHINE"))
             {
                 if (OperatingSystem.IsWindows())
@@ -220,15 +233,28 @@ namespace CSharpETW
                             return;
                         }
                         value = regKey.GetValue(obj.ValueName);
+                        if (value == null)
+                        {
+                            return;
+                        }
+                        if(rvk == RegistryValueKind.MultiString)
+                        {
+                            string[] valueArray = value as string[];
+                            
+                            foreach(string i in valueArray)
+                            {
+                                composite_sz += i;
+                            }
+                            value = composite_sz;
+                        }
                         if (value.ToString().Length <= threadhold)
                         {
                             return;
                         }
-                        if (value != null)
-                        {
-                            Console.WriteLine("Find Value !!");
-                            existed = true;
-                        }
+
+                        Console.WriteLine("Find Value !!");
+                        existed = true;
+                        
                     }
 
                 }
@@ -245,16 +271,30 @@ namespace CSharpETW
                         {
                             return;
                         }
-                        value = regKey.GetValue(obj.ValueName);             
+                        value = regKey.GetValue(obj.ValueName);
+                        if (value == null)
+                        {
+                            return;
+                        }
+                        if (rvk == RegistryValueKind.MultiString)
+                        {
+                            string[] valueArray = value as string[];
+
+                            foreach (string i in valueArray)
+                            {
+                                composite_sz += i;
+                                composite_sz += ' ';
+                            }
+                            value = composite_sz;
+                        }
                         if (value.ToString().Length <= threadhold)
                         {
                             return;
                         }
-                        if (value != null)
-                        {
-                            Console.WriteLine("Find Value !!");
-                            existed = true;
-                        }
+
+                        Console.WriteLine("Find Value !!");
+                        existed = true;
+                        
                     }
                 }
             }
@@ -263,8 +303,6 @@ namespace CSharpETW
             if (existed)
             {
                 string formattedEventTime = obj.TimeStamp.ToString("yyyy/MM/dd HH:mm:ss");
-                Process process = Process.GetProcessById(obj.ProcessID);
-                string processPath = process.MainModule.FileName;
                 ETWRecords records = new ETWRecords(){ EventName=obj.EventName, EventTime=formattedEventTime ,ProcessID=obj.ProcessID, ProcessName=obj.ProcessName, ImagePath=processPath, KeyHandle="0x" + obj.KeyHandle.ToString("X"), FullKeyName=fullKeyName, ValueName=obj.ValueName, Value=value.ToString()};
                 SocketPublisher(records);
                 existed = false;
@@ -361,13 +399,15 @@ namespace CSharpETW
         public Dictionary<int, string> options_value = new Dictionary<int, string>()
             {
                 {1, new string('a', 31)},
-                {2, @"powershell -executionpolicy bypass -windowstyle hidden -command ""$a = Get-ItemProperty -Path HKLM:\\System\\a | %{$_.v}; powershell -executionpolicy bypass -windowstyle hidden -encodedcommand $a"""}
+                {2, @"Write-Host ""testing!!!"""},
+                {3, @"powershell -executionpolicy bypass -windowstyle hidden -command ""$a = Get-ItemProperty -Path HKLM:\\System\\a | %{$_.v}; powershell -executionpolicy bypass -windowstyle hidden -encodedcommand $a"""},
+                {4, @"powershell -executionpolicy bypass -windowstyle hidden -command ""$a = Get-ItemProperty -Path HKLM:\\System\\b | %{$_.v}; powershell -executionpolicy bypass -windowstyle hidden -encodedcommand $a"""}
             };
 
         public Dictionary<int, RegistryKey> options_key = new Dictionary<int, RegistryKey>();
 
 
-        public int[] numbers = new int[3];
+        public int[] numbers = new int[5];
         public int[] numbers2 = new int[3];
 
         public Test()
@@ -389,8 +429,9 @@ namespace CSharpETW
                     Thread.Sleep(5000);
                     Random crandom = new Random();
                     // random value
-                    int choice_value = crandom.Next(1, 3);
+                    int choice_value = crandom.Next(1, 5);
                     numbers[choice_value]++;
+                    
                     string chosenOption = options_value[choice_value];
                     // random key
                     int choice_key = crandom.Next(1, 3);
@@ -413,6 +454,18 @@ namespace CSharpETW
             Console.WriteLine("Stop");
             Console.ReadLine();
         }
+        //do reg_muti_sz
+        public void DoTesting2()
+        {
+
+        }
+        //Important key test
+        public void DoTesting3()
+        {
+
+        }
+
+
     }
     class Program
     {
