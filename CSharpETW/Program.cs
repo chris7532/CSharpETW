@@ -132,12 +132,15 @@ namespace CSharpETW
                     
         }
 
-        public static X509Certificate2 GetFileCertificate(string filePath)
+        public static X509Certificate2Collection GetFileCertificate(string filePath)
         {
             try
             {
-                X509Certificate2 cert = new X509Certificate2(filePath);
-                return cert;
+                //X509Certificate2 cert = new X509Certificate2(filePath);
+                //return cert;
+                X509Certificate2Collection certificates = new X509Certificate2Collection();
+                certificates.Import(filePath);
+                return certificates;
             }
             catch (Exception)
             {
@@ -156,26 +159,88 @@ namespace CSharpETW
         public bool ProcessFilter(RegistryTraceData obj, string processPath)
         {
             //test digital signed
-            X509Certificate2 signerCertificate = GetFileCertificate(processPath);
-           
-            if (signerCertificate != null)
+            X509Certificate2Collection CertificateList = GetFileCertificate(processPath);
+            bool flag = false;
+            int count = 1;
+            if (CertificateList != null)
             {
-                if (_certList.Contains(signerCertificate.Thumbprint))
+
+                foreach (X509Certificate2 signerCertificate in CertificateList)
                 {
-                    Console.WriteLine("Process digital certificate information:：");
-                    Console.WriteLine("Signer： " + signerCertificate.Subject);
-                    Console.WriteLine("Issuer： " + signerCertificate.Issuer);
-                    Console.WriteLine("Deadline： " + signerCertificate.NotAfter);
-                    Console.WriteLine("Thumbrprint： " + signerCertificate.Thumbprint);
+                    //Console.WriteLine($"{count}th Certificate");
+                    count++;
+                    
+                    if (_certList.Contains(signerCertificate.Thumbprint))
+                    {
+                        /*
+                        Console.WriteLine("Process digital certificate information:：");
+                        Console.WriteLine("Signer： " + signerCertificate.Subject);
+                        Console.WriteLine("Issuer： " + signerCertificate.Issuer);
+                        Console.WriteLine("Deadline： " + signerCertificate.NotAfter);
+                        Console.WriteLine("Thumbrprint： " + signerCertificate.Thumbprint);
+                        Console.WriteLine();*/
+                        flag = _certList.Contains(signerCertificate.Thumbprint);
+
+                    }
+                    else
+                    {
+                        /*
+                        Console.WriteLine("Not in Origin List");
+                        Console.WriteLine("Process digital certificate information:：");
+                        Console.WriteLine("Signer： " + signerCertificate.Subject);
+                        Console.WriteLine("Issuer： " + signerCertificate.Issuer);
+                        */
+                        foreach (StoreName storeName in (StoreName[])
+                        Enum.GetValues(typeof(StoreName)))
+                        {
+                            if (storeName == StoreName.Disallowed)
+                            {
+                                continue;
+                            }
+                            X509Store store = new X509Store(storeName, StoreLocation.LocalMachine);
+                            store.Open(OpenFlags.ReadOnly);
+                            //test
+
+                            X509Certificate2Collection issuer_certificates = store.Certificates.Find(
+                            X509FindType.FindBySubjectDistinguishedName,
+                            signerCertificate.Issuer,
+                            false
+                            );
+
+                            foreach (X509Certificate2 x509 in issuer_certificates)
+                            {
+                                try
+                                {
+                                    //Console.WriteLine("Issuer Thumbrprint： " + x509.Thumbprint);
+
+                                }
+                                catch (CryptographicException)
+                                {
+                                    Console.WriteLine("Information could not be written out for this certificate.");
+                                }
+                                flag = _certList.Contains(x509.Thumbprint);
+                                
+                                x509.Reset();
+                            }
+                            store.Close();
+                        }
+
+                        //Console.WriteLine("Deadline： " + signerCertificate.NotAfter);
+                        //Console.WriteLine("Thumbrprint： " + signerCertificate.Thumbprint);
+                        //Console.WriteLine();
+
+                    }
+                                        
                 }
-                return obj.ProcessID != pid && !_certList.Contains(signerCertificate.Thumbprint);
             }
             else
             {
                 Console.WriteLine("There is no signature in this process.");
-                return obj.ProcessID != pid;
             }
-            //return obj.ProcessID == pid;
+
+            return obj.ProcessID != pid && !flag;
+            
+            //return obj.ProcessID == pid && !flag;
             //return obj.ProcessID!=pid && !blackList.Contains(obj.ProcessName, StringComparer.OrdinalIgnoreCase);
             //return obj.ProcessID != pid && !_certList.Contains(signerCertificate.Thumbprint);
         }
