@@ -16,10 +16,36 @@ using Newtonsoft.Json;
 using NetMQ;
 using NetMQ.Sockets;
 using System.Linq;
+using System.Security.Cryptography.X509Certificates;
+using System.Security.Cryptography;
 
 namespace CSharpETW
 {
     using NTKeywords = KernelTraceEventParser.Keywords;
+
+    class Analysis
+    {
+        public List<int> memoryData = new List<int>();
+
+        public void StartAnalysis(CancellationToken ct)
+        {
+            
+           
+            while (!ct.IsCancellationRequested)
+            {
+                Process currentProcess = Process.GetCurrentProcess();
+                int memoryUsed = (int)currentProcess.PrivateMemorySize64 / 1024/1024;
+                Console.WriteLine(memoryUsed);
+                // 將記憶體使用量存儲到數據數組中
+                memoryData.Add(memoryUsed);
+
+                // 每秒記錄一次，此處暫停1秒
+                Thread.Sleep(1000);
+            }
+            
+            
+        }
+    }
     class ETWRecords
     {
         //obj.EventName, obj.ProcessID, obj.ProcessName, obj.KeyHandle, fullKeyName
@@ -53,12 +79,15 @@ namespace CSharpETW
         private static readonly string url = $"tcp://localhost:{port}";
         // system process filter
         private static readonly List<string> blackList = new List<string>() { 
-            "svchost"
+            "svchost",
+            "System"
         };
+        private readonly List<string> _certList = new List<string>();
+            
         private readonly static string userRegPath = @"HKEY_USERS\" + currentUserSid;
         // follow by MITRE: https://attack.mitre.org/techniques/T1547/001/
         // Note : need to replace HKEY_CURRENT_USER with HKEY_USERS\{user's SID}
-        private static readonly List<string> importantKey = new List<string>() {
+        private readonly List<string> importantKey = new List<string>() {
             userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\Run",
             userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\RunOnce",
             @"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run",
@@ -75,14 +104,14 @@ namespace CSharpETW
             @"HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager",
             @"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
              userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
-             userRegPath + @"\AAAA\RegistryKeyTest"
         };
 
-        public ETWTrace()
+        public ETWTrace(List<string>certList)
         {
             Console.WriteLine("Publisher socket Binding...");
             this.pubSocket = new PublisherSocket();
             pubSocket.Bind(url);
+            _certList = certList;
 
         }
         public void SocketPublisher(ETWRecords records)
@@ -102,6 +131,21 @@ namespace CSharpETW
             }
                     
         }
+
+        public static X509Certificate2 GetFileCertificate(string filePath)
+        {
+            try
+            {
+                X509Certificate2 cert = new X509Certificate2(filePath);
+                return cert;
+            }
+            catch (Exception)
+            {
+                // 發生例外情況，無法取得數位簽名
+                return null;
+            }
+        }
+
         public bool KeyFilter(string keyPath)
         {
 
@@ -109,10 +153,31 @@ namespace CSharpETW
             
         }
         //whitelist
-        public bool ProcessFilter(RegistryTraceData obj)
+        public bool ProcessFilter(RegistryTraceData obj, string processPath)
         {
-            return obj.ProcessID == pid;
-            //return obj.ProcessID!=pid && !blackList.Contains(obj.ProcessName);
+            //test digital signed
+            X509Certificate2 signerCertificate = GetFileCertificate(processPath);
+           
+            if (signerCertificate != null)
+            {
+                if (_certList.Contains(signerCertificate.Thumbprint))
+                {
+                    Console.WriteLine("Process digital certificate information:：");
+                    Console.WriteLine("Signer： " + signerCertificate.Subject);
+                    Console.WriteLine("Issuer： " + signerCertificate.Issuer);
+                    Console.WriteLine("Deadline： " + signerCertificate.NotAfter);
+                    Console.WriteLine("Thumbrprint： " + signerCertificate.Thumbprint);
+                }
+                return obj.ProcessID != pid && !_certList.Contains(signerCertificate.Thumbprint);
+            }
+            else
+            {
+                Console.WriteLine("There is no signature in this process.");
+                return obj.ProcessID != pid;
+            }
+            //return obj.ProcessID == pid;
+            //return obj.ProcessID!=pid && !blackList.Contains(obj.ProcessName, StringComparer.OrdinalIgnoreCase);
+            //return obj.ProcessID != pid && !_certList.Contains(signerCertificate.Thumbprint);
         }
 
         public void MakeKernelParserStateless(ETWTraceEventSource source)
@@ -174,9 +239,11 @@ namespace CSharpETW
             return CombineName;
         }
 
+        //deprecated
         private void GeneralKeyCallBack(RegistryTraceData obj)
         {
-            if (!ProcessFilter(obj))
+            string processPath = null;
+            if (!ProcessFilter(obj,processPath))
             {
                 return;
             }
@@ -191,43 +258,57 @@ namespace CSharpETW
         {
             var fullKeyName = GetFullName(obj.KeyHandle, obj.KeyName);
 
-
-            // testing filter
-            if (!ProcessFilter(obj) && !KeyFilter(fullKeyName))
-            {
-                return;
-            }
- 
-            /*
-            if(!ProcessFilter(obj) && !KeyFilter(fullKeyName))
-            {
-                return;
-            }
-            */
             object value = null;
             string composite_sz = null;
             RegistryKey regKey = null;
             RegistryValueKind rvk;
             Process process = null;
             string processPath = null;
+            // key filter
+            bool key_flag = KeyFilter(fullKeyName);
+            
             try
             {
                 process = Process.GetProcessById(obj.ProcessID);
                 processPath = process.MainModule.FileName;
+                // filter
+                if (!ProcessFilter(obj, processPath) && !key_flag)
+                {
+                    return;
+                }
             }
             catch(Exception ex)
             {
                 Console.WriteLine(ex.Message);
             }
 
+            
+
             if (fullKeyName.Contains("HKEY_LOCAL_MACHINE"))
             {
                 if (OperatingSystem.IsWindows())
                 {
-                    regKey = Registry.LocalMachine.OpenSubKey(fullKeyName.Substring("HKEY_LOCAL_MACHINE".Length + 1));
+                    try 
+                    {
+                        regKey = Registry.LocalMachine.OpenSubKey(fullKeyName.Substring("HKEY_LOCAL_MACHINE".Length + 1));
+                    }
+                    catch(Exception ex)
+                    {
+                        Console.WriteLine(ex.Message);
+                    }
                     if (regKey != null)
                     {
-                        rvk = regKey.GetValueKind(obj.ValueName);
+                        try
+                        {
+                            rvk = regKey.GetValueKind(obj.ValueName);
+                        }
+                        catch (IOException)
+                        {
+                            // 處理值不存在的情況
+                            Console.WriteLine("Value does not exist.");
+                            // 可以在這裡執行相應的操作或返回預設值
+                            return;
+                        }
                         if (rvk != RegistryValueKind.String && rvk != RegistryValueKind.ExpandString && rvk != RegistryValueKind.MultiString)
                         {
                             return;
@@ -240,14 +321,17 @@ namespace CSharpETW
                         if(rvk == RegistryValueKind.MultiString)
                         {
                             string[] valueArray = value as string[];
-                            
-                            foreach(string i in valueArray)
+                            if (valueArray.Length == 0)
+                            {
+                                return;
+                            }
+                            foreach (string i in valueArray)
                             {
                                 composite_sz += i;
                             }
                             value = composite_sz;
                         }
-                        if (value.ToString().Length <= threadhold)
+                        if (value.ToString().Length <= threadhold && !key_flag)
                         {
                             return;
                         }
@@ -263,10 +347,28 @@ namespace CSharpETW
             {
                 if (OperatingSystem.IsWindows())
                 {
-                    regKey = Registry.Users.OpenSubKey(fullKeyName.Substring("HKEY_USERS".Length + 1));
+                    try
+                    {
+                        regKey = Registry.Users.OpenSubKey(fullKeyName.Substring("HKEY_USERS".Length + 1));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine(ex.Message);
+                    }
                     if (regKey != null)
                     {
-                        rvk = regKey.GetValueKind(obj.ValueName);
+                        try
+                        {
+                            rvk = regKey.GetValueKind(obj.ValueName);
+                        }
+                        catch (IOException)
+                        {
+                            // 處理值不存在的情況
+                            Console.WriteLine("Value does not exist.");
+                            // 可以在這裡執行相應的操作或返回預設值
+                            return;
+                        }
+
                         if (rvk != RegistryValueKind.String && rvk != RegistryValueKind.ExpandString && rvk != RegistryValueKind.MultiString)
                         {
                             return;
@@ -279,7 +381,10 @@ namespace CSharpETW
                         if (rvk == RegistryValueKind.MultiString)
                         {
                             string[] valueArray = value as string[];
-
+                            if (valueArray.Length == 0)
+                            {
+                                return;
+                            }
                             foreach (string i in valueArray)
                             {
                                 composite_sz += i;
@@ -287,14 +392,13 @@ namespace CSharpETW
                             }
                             value = composite_sz;
                         }
-                        if (value.ToString().Length <= threadhold)
+                        if (value.ToString().Length <= threadhold && !key_flag)
                         {
                             return;
                         }
 
                         Console.WriteLine("Find Value !!");
                         existed = true;
-                        
                     }
                 }
             }
@@ -323,13 +427,9 @@ namespace CSharpETW
               obj.EventName, obj.KeyHandle, obj.KeyName, obj.ProcessName
               );
             */
-            if (KeyHandle2KeyName.ContainsKey(obj.KeyHandle)){
-                KeyHandle2KeyName[obj.KeyHandle] = obj.KeyName;
-            }
-            else
-            {
-                KeyHandle2KeyName.Add(obj.KeyHandle, obj.KeyName);
-            }
+
+            KeyHandle2KeyName.TryAdd(obj.KeyHandle, obj.KeyName);
+            
             
         }
         private void KCBDelete(RegistryTraceData obj)
@@ -426,7 +526,7 @@ namespace CSharpETW
                 
                 for (int i = 0; i < 200; i++)
                 {
-                    Thread.Sleep(5000);
+                    Thread.Sleep(3000);
                     Random crandom = new Random();
                     // random value
                     int choice_value = crandom.Next(1, 5);
@@ -439,16 +539,16 @@ namespace CSharpETW
                     options_key[choice_key].SetValue("Path", chosenOption);
 
                 }
-                foreach(int num in numbers)
+                for(int i = 1; i < numbers.Length; i++)
                 {
-                    Console.WriteLine(num);
+                    Console.WriteLine($"Option{i}: {numbers[i]}");
                 }
 
                 Console.WriteLine("---------");
 
-                foreach (int num in numbers2)
+                for (int i = 1; i < numbers2.Length; i++)
                 {
-                    Console.WriteLine(num);
+                    Console.WriteLine($"Option{i}: {numbers2[i]}");
                 }
             }
             Console.WriteLine("Stop");
@@ -471,7 +571,68 @@ namespace CSharpETW
     {
         static void Main(string[] args)
         {
+            /*
+            foreach (StoreLocation storeLocation in (StoreLocation[])
+            Enum.GetValues(typeof(StoreLocation)))
+            {
+                foreach (StoreName storeName in (StoreName[])
+                    Enum.GetValues(typeof(StoreName)))
+                {
+                    X509Store store = new X509Store(storeName, storeLocation);
+                    Console.WriteLine(storeName);
+                    try
+                    {
+                        store.Open(OpenFlags.OpenExistingOnly);
 
+                        Console.WriteLine("Yes    {0,4}  {1}, {2}",
+                            store.Certificates.Count, store.Name, store.Location);
+                    }
+                    catch (CryptographicException)
+                    {
+                        Console.WriteLine("No           {0}, {1}",
+                            store.Name, store.Location);
+                    }
+                }
+                Console.WriteLine();
+            }
+            */
+            // Store Thumbprint of MicroSoft 
+            List<string> certList = new List<string>();
+            Console.WriteLine("Certificate published by MicroSoft : ");
+            foreach (StoreName storeName in (StoreName[])
+                    Enum.GetValues(typeof(StoreName)))
+            {
+                
+                if (storeName == StoreName.Disallowed)
+                {
+                    continue;
+                }
+                
+                X509Store store = new X509Store(storeName, StoreLocation.LocalMachine);
+                store.Open(OpenFlags.OpenExistingOnly);
+
+                // 獲取存放區中的所有憑證
+                X509Certificate2Collection certificates = store.Certificates;
+
+                
+                foreach (X509Certificate2 cert in certificates)
+                {
+                    if (cert.Subject.Contains("Microsoft"))
+                    {
+                        // 檢查憑證的發行者是否包含 "Microsoft" 字樣
+
+                        Console.WriteLine("Process digital certificate information:：");
+                        Console.WriteLine("Signer： " + cert.Subject);
+                        Console.WriteLine("Issuer： " + cert.Issuer);
+                        Console.WriteLine("Deadline： " + cert.NotAfter);
+                        Console.WriteLine("Thumbrprint： " + cert.Thumbprint);
+                        certList.Add(cert.Thumbprint);
+                    }
+
+                }
+            }
+            
+            
             using (CancellationTokenSource cts = new CancellationTokenSource()){
 
                 if (OperatingSystem.IsWindows())
@@ -487,20 +648,43 @@ namespace CSharpETW
 
                 };
 
-                ETWTrace trace = new ETWTrace();
+                ETWTrace trace = new ETWTrace(certList);
 
                 Task task = Task.Run(()=> trace.StartSession(cts.Token),cts.Token);
                 Thread.Sleep(1000);
 
+
+                Stopwatch stopwatch = new Stopwatch();
+                stopwatch.Start();
+                Analysis As = new Analysis();
+                Task as_task = Task.Run(() => As.StartAnalysis(cts.Token), cts.Token);
+                
                 /*do Testing here*/
-                Test test = new Test();
-                Task test_task = Task.Run(() => test.DoTesting(), cts.Token);
+                //Test test = new Test();
+                //Task test_task = Task.Run(() => test.DoTesting(), cts.Token);
            
                 task.Wait();
+                as_task.Wait();
+                stopwatch.Stop();
+                long sum = 0;
+                foreach(int i in As.memoryData)
+                {
+                    sum += i;
+                }
+                Console.WriteLine($"{stopwatch.Elapsed.TotalSeconds}");
+                Console.WriteLine($"average mem : {(double)(sum / stopwatch.Elapsed.TotalSeconds)}");
+
                 if (OperatingSystem.IsWindows())
                 {
-                    Registry.LocalMachine.DeleteSubKey(@"Software\RegistryKeyTest");
-                    Registry.CurrentUser.DeleteSubKeyTree(@"AAAA");
+                    var registryKey = Registry.LocalMachine.OpenSubKey(@"Software\RegistryKeyTest");
+                    var registryKey2 = Registry.CurrentUser.OpenSubKey(@"AAAA");
+
+                    if(registryKey!=null && registryKey2 != null)
+                    {
+                        Registry.LocalMachine.DeleteSubKey(@"Software\RegistryKeyTest");
+                        Registry.CurrentUser.DeleteSubKeyTree(@"AAAA");
+                    }
+
                     cts.Cancel();
                 }
                 
