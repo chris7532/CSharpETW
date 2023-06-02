@@ -18,6 +18,7 @@ using NetMQ.Sockets;
 using System.Linq;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Cryptography;
+using System.Collections.Concurrent;
 
 namespace CSharpETW
 {
@@ -46,6 +47,22 @@ namespace CSharpETW
             
         }
     }
+    public static class QueuedConsole
+    {
+        private static BlockingCollection<string> m_Queue = new BlockingCollection<string>();
+
+        static QueuedConsole()
+        {
+            var thread = new Thread(() => { while (true) Console.WriteLine(m_Queue.Take()); });
+            thread.IsBackground = true;
+            thread.Start();
+        }
+
+        public static void WriteLine(string value)
+        {
+            m_Queue.Add(value);
+        }
+    }
     class ETWRecords
     {
         //obj.EventName, obj.ProcessID, obj.ProcessName, obj.KeyHandle, fullKeyName
@@ -68,7 +85,7 @@ namespace CSharpETW
         private static readonly string currentUserSid = OperatingSystem.IsWindows() ? WindowsIdentity.GetCurrent().User.Value : null;
         private static readonly int pid = Process.GetCurrentProcess().Id;
         //Config setting
-        private static readonly double MonitorTimeInSeconds = 1;
+        private static readonly double MonitorTimeInSeconds = 2;
         private static readonly int threadhold = 30;
 
         private static bool existed = false;
@@ -78,9 +95,21 @@ namespace CSharpETW
         private static readonly int port = 5556;
         private static readonly string url = $"tcp://localhost:{port}";
         // system process filter
-        private static readonly List<string> blackList = new List<string>() { 
+        private static readonly List<string> trustedList = new List<string>() { 
             "svchost",
             "System"
+        };
+        private static readonly List<string> trustedFolder = new List<string>()
+        {
+            Environment.ExpandEnvironmentVariables(@"%SystemRoot%\System32").Replace("\\","\\\\"),
+            Environment.ExpandEnvironmentVariables(@"%SystemRoot%").Replace("\\","\\\\"),
+            Environment.ExpandEnvironmentVariables(@"%ProgramFiles%\MicroSoft Office").Replace("\\","\\\\")
+        };
+        private static readonly List<string> NontrustedProgram = new List<string>()
+        {
+            "reg",
+            "powershell",
+            "cmd"
         };
         private readonly List<string> _certList = new List<string>();
             
@@ -105,10 +134,20 @@ namespace CSharpETW
             @"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
              userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
         };
+        private Timer timer;
+        //private TraceEventSession session;
 
+        public ETWTrace()
+        {
+            QueuedConsole.WriteLine("Publisher socket Binding...");
+            this.pubSocket = new PublisherSocket();
+            pubSocket.Bind(url);
+            
+
+        }
         public ETWTrace(List<string>certList)
         {
-            Console.WriteLine("Publisher socket Binding...");
+            QueuedConsole.WriteLine("Publisher socket Binding...");
             this.pubSocket = new PublisherSocket();
             pubSocket.Bind(url);
             _certList = certList;
@@ -118,13 +157,13 @@ namespace CSharpETW
         {
             lock (lockObject)
             {
-               
-                Console.WriteLine("Publisher socket Connecting...");
+
+                QueuedConsole.WriteLine("Publisher socket Connecting...");
 
                 pubSocket.Options.SendHighWatermark = 1000;
                 
                 string jsonData = JsonConvert.SerializeObject(records, Formatting.Indented);
-                Console.WriteLine(jsonData);
+                QueuedConsole.WriteLine(jsonData);
                 pubSocket.SendMoreFrame("").SendFrame(jsonData);
                 //Thread.Sleep(100);
                                      
@@ -158,8 +197,18 @@ namespace CSharpETW
         //whitelist
         public bool ProcessFilter(RegistryTraceData obj, string processPath)
         {
+            /*
+            if (processPath == null)
+            {
+                return obj.ProcessID != pid;
+            }
+            if (obj.ProcessName.Contains("powershell", StringComparison.OrdinalIgnoreCase) || obj.ProcessName.Contains("cmd", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
             //test digital signed
             X509Certificate2Collection CertificateList = GetFileCertificate(processPath);
+            
             bool flag = false;
             int count = 1;
             if (CertificateList != null)
@@ -172,24 +221,24 @@ namespace CSharpETW
                     
                     if (_certList.Contains(signerCertificate.Thumbprint))
                     {
-                        /*
+                        
                         Console.WriteLine("Process digital certificate information:：");
                         Console.WriteLine("Signer： " + signerCertificate.Subject);
                         Console.WriteLine("Issuer： " + signerCertificate.Issuer);
                         Console.WriteLine("Deadline： " + signerCertificate.NotAfter);
                         Console.WriteLine("Thumbrprint： " + signerCertificate.Thumbprint);
-                        Console.WriteLine();*/
+                        Console.WriteLine();
                         flag = _certList.Contains(signerCertificate.Thumbprint);
-
+                        signerCertificate.Dispose();
                     }
                     else
                     {
-                        /*
+                        
                         Console.WriteLine("Not in Origin List");
                         Console.WriteLine("Process digital certificate information:：");
                         Console.WriteLine("Signer： " + signerCertificate.Subject);
                         Console.WriteLine("Issuer： " + signerCertificate.Issuer);
-                        */
+                        
                         foreach (StoreName storeName in (StoreName[])
                         Enum.GetValues(typeof(StoreName)))
                         {
@@ -216,15 +265,17 @@ namespace CSharpETW
                                 }
                                 catch (CryptographicException)
                                 {
-                                    Console.WriteLine("Information could not be written out for this certificate.");
+                                    QueuedConsole.WriteLine("Information could not be written out for this certificate.");
                                 }
                                 flag = _certList.Contains(x509.Thumbprint);
                                 
                                 x509.Reset();
+                                x509.Dispose();
                             }
                             store.Close();
+                            store.Dispose();
                         }
-
+                        signerCertificate.Dispose();
                         //Console.WriteLine("Deadline： " + signerCertificate.NotAfter);
                         //Console.WriteLine("Thumbrprint： " + signerCertificate.Thumbprint);
                         //Console.WriteLine();
@@ -232,16 +283,35 @@ namespace CSharpETW
                     }
                                         
                 }
+                
             }
             else
             {
-                Console.WriteLine("There is no signature in this process.");
+                QueuedConsole.WriteLine("There is no signature in this process.");
+                
             }
-
+            CertificateList.Clear();
             return obj.ProcessID != pid && !flag;
-            
+            */
             //return obj.ProcessID == pid && !flag;
-            //return obj.ProcessID!=pid && !blackList.Contains(obj.ProcessName, StringComparer.OrdinalIgnoreCase);
+            
+            if (obj.ProcessName.Equals("reg", StringComparison.OrdinalIgnoreCase)){
+                Console.WriteLine("ss");
+            }
+            bool flag = false;
+            foreach(string folder in trustedFolder)
+            {
+                
+                if(Regex.IsMatch(processPath, folder, RegexOptions.IgnoreCase))
+                {
+                    flag = true;
+                    break;
+                }
+            };
+
+
+            //return obj.ProcessID!=pid && !trustedList.Contains(obj.ProcessName, StringComparer.OrdinalIgnoreCase);
+            return obj.ProcessID != pid && !flag;
             //return obj.ProcessID != pid && !_certList.Contains(signerCertificate.Thumbprint);
         }
 
@@ -255,44 +325,53 @@ namespace CSharpETW
         }
         public void RunDownSession(String sessionName, CancellationToken token)
         {
-            var stop = false;
-            bool doOnce = true;
-            Console.WriteLine("Starting rundown session: {0}", sessionName);
-            while (!stop)
+            try
             {
-                
-                using (TraceEventSession session = new TraceEventSession(sessionName))
+                var stop = false;
+                bool doOnce = true;
+                QueuedConsole.WriteLine($"Starting rundown session: {sessionName}");
+                while (!stop)
                 {
-                    session.EnableKernelProvider(NTKeywords.Registry, NTKeywords.None);
 
-                    MakeKernelParserStateless(session.Source);
-                    session.Source.Kernel.RegistryKCBRundownBegin += KCBCreate;
-                    session.Source.Kernel.RegistryKCBRundownEnd += KCBCreate;
-
-                    if (doOnce)
+                    using (TraceEventSession session = new TraceEventSession(sessionName))
                     {
-                        token.Register(() =>
+                        session.EnableKernelProvider(NTKeywords.Registry, NTKeywords.None);
+
+                        MakeKernelParserStateless(session.Source);
+                        session.Source.Kernel.RegistryKCBRundownBegin += KCBCreate;
+                        session.Source.Kernel.RegistryKCBRundownEnd += KCBCreate;
+
+                        if (doOnce)
                         {
-                            Console.WriteLine("RunDown stop!!");
+                            token.Register(() =>
+                            {
+                                QueuedConsole.WriteLine("RunDown stop!!");
+                                session.Stop();
+                                session.Dispose();
+                                stop = true;
+                            });
+                            doOnce = false;
+                        }
+                       
+                        timer = new Timer(delegate (object state)
+                        {
+                            QueuedConsole.WriteLine("Timer crontab exec!!");
                             session.Stop();
-                            session.Dispose();
-                            stop = true;
-                        });
-                        doOnce = false;
-                    }
-                    
-                    var timer = new Timer(delegate (object state)
-                    {
-                        Console.WriteLine("Timer crontab exec!!");
-                        session.Stop();
-                    }, null, (int)(MonitorTimeInSeconds * 1000), Timeout.Infinite);
 
-               
-                    session.Source.Process();
+                        }, null, (int)(MonitorTimeInSeconds * 1000), Timeout.Infinite);
+
+
+                        session.Source.Process();
+
+                    }
 
                 }
-                                         
             }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Exception occurred in RunDownSession: " + ex.ToString());
+            }
+            
         }
         public String GetFullName(UInt64 keyHandle, String keyName)
         {
@@ -333,18 +412,18 @@ namespace CSharpETW
             bool key_flag = KeyFilter(fullKeyName);
             
             try
-            {
+            {              
                 process = Process.GetProcessById(obj.ProcessID);
                 processPath = process.MainModule.FileName;
                 // filter
                 if (!ProcessFilter(obj, processPath) && !key_flag)
                 {
                     return;
-                }
+                }              
             }
             catch(Exception ex)
             {
-                Console.WriteLine(ex.Message);
+                QueuedConsole.WriteLine(ex.Message);
             }
 
             
@@ -359,7 +438,7 @@ namespace CSharpETW
                     }
                     catch(Exception ex)
                     {
-                        Console.WriteLine(ex.Message);
+                        QueuedConsole.WriteLine(ex.Message);
                     }
                     if (regKey != null)
                     {
@@ -370,7 +449,7 @@ namespace CSharpETW
                         catch (IOException)
                         {
                             // 處理值不存在的情況
-                            Console.WriteLine("Value does not exist.");
+                            QueuedConsole.WriteLine("Value does not exist.");
                             // 可以在這裡執行相應的操作或返回預設值
                             return;
                         }
@@ -400,8 +479,7 @@ namespace CSharpETW
                         {
                             return;
                         }
-
-                        Console.WriteLine("Find Value !!");
+                       
                         existed = true;
                         
                     }
@@ -418,7 +496,7 @@ namespace CSharpETW
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine(ex.Message);
+                        QueuedConsole.WriteLine(ex.Message);
                     }
                     if (regKey != null)
                     {
@@ -429,7 +507,7 @@ namespace CSharpETW
                         catch (IOException)
                         {
                             // 處理值不存在的情況
-                            Console.WriteLine("Value does not exist.");
+                            QueuedConsole.WriteLine("Value does not exist.");
                             // 可以在這裡執行相應的操作或返回預設值
                             return;
                         }
@@ -461,8 +539,7 @@ namespace CSharpETW
                         {
                             return;
                         }
-
-                        Console.WriteLine("Find Value !!");
+                      
                         existed = true;
                     }
                 }
@@ -492,7 +569,7 @@ namespace CSharpETW
               obj.EventName, obj.KeyHandle, obj.KeyName, obj.ProcessName
               );
             */
-
+            
             KeyHandle2KeyName.TryAdd(obj.KeyHandle, obj.KeyName);
             
             
@@ -512,7 +589,7 @@ namespace CSharpETW
         {
             if (!(TraceEventSession.IsElevated() ?? false))
             {
-                Console.WriteLine("Please run me as Administrator!!");
+                QueuedConsole.WriteLine("Please run me as Administrator!!");
                 return;
             }
                       
@@ -552,7 +629,7 @@ namespace CSharpETW
                 */
                 session.Source.Process();
                 t1.Wait();
-                Console.WriteLine("Session Stop!!");
+                QueuedConsole.WriteLine("Session Stop!!");
 
             }
             
@@ -636,99 +713,78 @@ namespace CSharpETW
     {
         static void Main(string[] args)
         {
-            /*
-            foreach (StoreLocation storeLocation in (StoreLocation[])
-            Enum.GetValues(typeof(StoreLocation)))
-            {
-                foreach (StoreName storeName in (StoreName[])
-                    Enum.GetValues(typeof(StoreName)))
-                {
-                    X509Store store = new X509Store(storeName, storeLocation);
-                    Console.WriteLine(storeName);
-                    try
-                    {
-                        store.Open(OpenFlags.OpenExistingOnly);
-
-                        Console.WriteLine("Yes    {0,4}  {1}, {2}",
-                            store.Certificates.Count, store.Name, store.Location);
-                    }
-                    catch (CryptographicException)
-                    {
-                        Console.WriteLine("No           {0}, {1}",
-                            store.Name, store.Location);
-                    }
-                }
-                Console.WriteLine();
-            }
-            */
-            // Store Thumbprint of MicroSoft 
-            List<string> certList = new List<string>();
-            Console.WriteLine("Certificate published by MicroSoft : ");
-            foreach (StoreName storeName in (StoreName[])
-                    Enum.GetValues(typeof(StoreName)))
-            {
-                
-                if (storeName == StoreName.Disallowed)
-                {
-                    continue;
-                }
-                
-                X509Store store = new X509Store(storeName, StoreLocation.LocalMachine);
-                store.Open(OpenFlags.OpenExistingOnly);
-
-                // 獲取存放區中的所有憑證
-                X509Certificate2Collection certificates = store.Certificates;
-
-                
-                foreach (X509Certificate2 cert in certificates)
-                {
-                    if (cert.Subject.Contains("Microsoft"))
-                    {
-                        // 檢查憑證的發行者是否包含 "Microsoft" 字樣
-
-                        Console.WriteLine("Process digital certificate information:：");
-                        Console.WriteLine("Signer： " + cert.Subject);
-                        Console.WriteLine("Issuer： " + cert.Issuer);
-                        Console.WriteLine("Deadline： " + cert.NotAfter);
-                        Console.WriteLine("Thumbrprint： " + cert.Thumbprint);
-                        certList.Add(cert.Thumbprint);
-                    }
-
-                }
-            }
-            
-            
+           
+                      
             using (CancellationTokenSource cts = new CancellationTokenSource()){
+
+                // Store Thumbprint of MicroSoft 
+                /*
+                List<string> certList = new List<string>();
+                QueuedConsole.WriteLine("Certificate published by MicroSoft : ");
+                foreach (StoreName storeName in (StoreName[])
+                        Enum.GetValues(typeof(StoreName)))
+                {
+
+                    if (storeName == StoreName.Disallowed)
+                    {
+                        continue;
+                    }
+
+                    X509Store store = new X509Store(storeName, StoreLocation.LocalMachine);
+                    store.Open(OpenFlags.OpenExistingOnly);
+
+                    // 獲取存放區中的所有憑證
+                    X509Certificate2Collection certificates = store.Certificates;
+
+
+                    foreach (X509Certificate2 cert in certificates)
+                    {
+                        if (cert.Subject.Contains("Microsoft"))
+                        {
+                            // 檢查憑證的發行者是否包含 "Microsoft" 字樣
+
+                            QueuedConsole.WriteLine("Process digital certificate information:：");
+                            QueuedConsole.WriteLine("Signer： " + cert.Subject);
+                            QueuedConsole.WriteLine("Issuer： " + cert.Issuer);
+                            QueuedConsole.WriteLine("Deadline： " + cert.NotAfter);
+                            QueuedConsole.WriteLine("Thumbrprint： " + cert.Thumbprint);
+                            certList.Add(cert.Thumbprint);
+                        }
+
+                    }
+                }
+                */
 
                 if (OperatingSystem.IsWindows())
                 {
                     string currentUserSid = WindowsIdentity.GetCurrent().User.Value;
-                    Console.WriteLine("Current user SID: " + currentUserSid);
+                    QueuedConsole.WriteLine("Current user SID: " + currentUserSid);
                 }
                 Console.CancelKeyPress += (sender, eventArgs) =>
                 {
-                    Console.WriteLine("Cancel Session");
+                    QueuedConsole.WriteLine("Cancel Session");
                     cts.Cancel();
                     eventArgs.Cancel = true;
 
                 };
 
-                ETWTrace trace = new ETWTrace(certList);
+                ETWTrace trace = new ETWTrace();
 
                 Task task = Task.Run(()=> trace.StartSession(cts.Token),cts.Token);
                 Thread.Sleep(1000);
 
 
-                Stopwatch stopwatch = new Stopwatch();
-                stopwatch.Start();
-                Analysis As = new Analysis();
-                Task as_task = Task.Run(() => As.StartAnalysis(cts.Token), cts.Token);
+                //Stopwatch stopwatch = new Stopwatch();
+                //stopwatch.Start();
+                //Analysis As = new Analysis();
+                //Task as_task = Task.Run(() => As.StartAnalysis(cts.Token), cts.Token);
                 
                 /*do Testing here*/
                 //Test test = new Test();
                 //Task test_task = Task.Run(() => test.DoTesting(), cts.Token);
-           
+                
                 task.Wait();
+                /*
                 as_task.Wait();
                 stopwatch.Stop();
                 long sum = 0;
@@ -738,7 +794,7 @@ namespace CSharpETW
                 }
                 Console.WriteLine($"{stopwatch.Elapsed.TotalSeconds}");
                 Console.WriteLine($"average mem : {(double)(sum / stopwatch.Elapsed.TotalSeconds)}");
-
+                */
                 if (OperatingSystem.IsWindows())
                 {
                     var registryKey = Registry.LocalMachine.OpenSubKey(@"Software\RegistryKeyTest");
