@@ -36,7 +36,7 @@ namespace CSharpETW
             {
                 Process currentProcess = Process.GetCurrentProcess();
                 int memoryUsed = (int)currentProcess.PrivateMemorySize64 / 1024/1024;
-                Console.WriteLine(memoryUsed);
+                //Console.WriteLine(memoryUsed);
                 // 將記憶體使用量存儲到數據數組中
                 memoryData.Add(memoryUsed);
 
@@ -98,6 +98,7 @@ namespace CSharpETW
         private static readonly List<string> trustedList = new List<string>() { 
             "svchost",
             "System"
+            
         };
         private static readonly List<string> trustedFolder = new List<string>()
         {
@@ -133,6 +134,11 @@ namespace CSharpETW
             @"HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager",
             @"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
              userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
+        };
+        private readonly List<string> builtInKey = new List<string>()
+        {
+            @"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows Defender",
+            @"HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"
         };
         private Timer timer;
         //private TraceEventSession session;
@@ -294,20 +300,24 @@ namespace CSharpETW
             return obj.ProcessID != pid && !flag;
             */
             //return obj.ProcessID == pid && !flag;
-            
-            if (obj.ProcessName.Equals("reg", StringComparison.OrdinalIgnoreCase)){
-                Console.WriteLine("ss");
-            }
             bool flag = false;
-            foreach(string folder in trustedFolder)
-            {
+            if (processPath != null) {
                 
-                if(Regex.IsMatch(processPath, folder, RegexOptions.IgnoreCase))
+                foreach (string folder in trustedFolder)
                 {
-                    flag = true;
-                    break;
-                }
-            };
+
+                    if (Regex.IsMatch(processPath, folder, RegexOptions.IgnoreCase))
+                    {
+                        flag = true;
+                        break;
+                    }
+                };
+            }
+            else
+            {
+               
+                return obj.ProcessID != pid && !trustedList.Contains(obj.ProcessName, StringComparer.OrdinalIgnoreCase);
+            }
 
 
             //return obj.ProcessID!=pid && !trustedList.Contains(obj.ProcessName, StringComparer.OrdinalIgnoreCase);
@@ -362,7 +372,7 @@ namespace CSharpETW
 
 
                         session.Source.Process();
-
+                        
                     }
 
                 }
@@ -372,6 +382,109 @@ namespace CSharpETW
                 Console.WriteLine("Exception occurred in RunDownSession: " + ex.ToString());
             }
             
+        }
+        public async Task RunDownSession2(String sessionName, CancellationToken token)
+        {
+            try
+            {
+                var stop = false;
+                bool doOnce = true;
+                QueuedConsole.WriteLine($"Starting rundown session: {sessionName}");
+                while (!stop)
+                {
+
+                    using (TraceEventSession session = new TraceEventSession(sessionName))
+                    {
+                        session.EnableKernelProvider(NTKeywords.Registry, NTKeywords.None);
+
+                        MakeKernelParserStateless(session.Source);
+                        session.Source.Kernel.RegistryKCBRundownBegin += KCBCreate;
+                        session.Source.Kernel.RegistryKCBRundownEnd += KCBCreate;
+
+                        if (doOnce)
+                        {
+                            token.Register(() =>
+                            {
+                                QueuedConsole.WriteLine("RunDown stop!!");
+                                session.Stop();
+                                session.Dispose();
+                                stop = true;
+                            });
+                            doOnce = false;
+                        }
+
+                        timer = new Timer(delegate (object state)
+                        {
+                            QueuedConsole.WriteLine("Timer crontab exec!!");
+                            session.Stop();
+
+                        }, null, (int)(MonitorTimeInSeconds * 1000), Timeout.Infinite);
+
+
+                        await Task.Run(() => session.Source.Process());
+                        session.Dispose();
+                    }
+
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Exception occurred in RunDownSession: " + ex.ToString());
+            }
+
+        }
+
+        public async Task RunDownSession3(String sessionName, CancellationToken token)
+        {
+            try
+            {
+                var stop = false;
+                bool doOnce = true;
+                QueuedConsole.WriteLine($"Starting rundown session: {sessionName}");
+                while (!stop)
+                {
+                    var session = new TraceEventSession(sessionName);
+
+                    session.EnableKernelProvider(NTKeywords.Registry, NTKeywords.None);
+
+                    MakeKernelParserStateless(session.Source);
+                    session.Source.Kernel.RegistryKCBRundownBegin += KCBCreate;
+                    session.Source.Kernel.RegistryKCBRundownEnd += KCBCreate;
+
+                    if (doOnce)
+                    {
+                        token.Register(() =>
+                        {
+                            QueuedConsole.WriteLine("RunDown stop!!");
+                            session.Stop();
+                            session.Dispose();
+                            stop = true;
+                        });
+                        doOnce = false;
+                    }
+
+                    using (session)
+                    {
+                        timer = new Timer(delegate (object state)
+                        {
+                            QueuedConsole.WriteLine("Timer crontab exec!!");
+                            session.Stop();
+
+                        }, null, (int)(MonitorTimeInSeconds * 1000), Timeout.Infinite);
+                        await Task.Run(() => session.Source.Process());
+
+                    }
+
+                    session.Stop();
+                    session.Dispose();
+                  
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Exception occurred in RunDownSession: " + ex.ToString());
+            }
+
         }
         public String GetFullName(UInt64 keyHandle, String keyName)
         {
@@ -410,7 +523,24 @@ namespace CSharpETW
             string processPath = null;
             // key filter
             bool key_flag = KeyFilter(fullKeyName);
-            
+            if (builtInKey.Contains(fullKeyName, StringComparer.OrdinalIgnoreCase)){
+                if (OperatingSystem.IsWindows())
+                {
+                    using (RegistryKey key = Registry.LocalMachine.OpenSubKey(fullKeyName.Substring("HKEY_LOCAL_MACHINE".Length + 1)))
+                    {
+                        if (key == null)
+                        {
+                            return;
+                        }
+                        else
+                        {
+                            key.DeleteValue(obj.ValueName);
+                        }
+                    }
+                    
+                }
+                return;
+            }
             try
             {              
                 process = Process.GetProcessById(obj.ProcessID);
@@ -424,6 +554,10 @@ namespace CSharpETW
             catch(Exception ex)
             {
                 QueuedConsole.WriteLine(ex.Message);
+                if (!ProcessFilter(obj, processPath) && !key_flag)
+                {
+                    return;
+                }
             }
 
             
@@ -483,6 +617,8 @@ namespace CSharpETW
                         existed = true;
                         
                     }
+                    regKey.Close();
+                    regKey.Dispose();
 
                 }
             }
@@ -542,9 +678,12 @@ namespace CSharpETW
                       
                         existed = true;
                     }
+                    regKey.Close();
+                    regKey.Dispose();
                 }
-            }
 
+            }
+            
             
             if (existed)
             {
@@ -603,7 +742,7 @@ namespace CSharpETW
 
                 MakeKernelParserStateless(session.Source);
                 Task t1 =  Task.Run(()=>RunDownSession(sessionName + "_RunDown", token));
-
+                RunDownSession(sessionName + "_RunDown", token);
                 session.Source.Kernel.RegistryKCBCreate += KCBCreate;
                 session.Source.Kernel.RegistryKCBDelete += KCBDelete;
                 //session.Source.Kernel.RegistryOpen += GeneralKeyCallBack;
@@ -634,6 +773,168 @@ namespace CSharpETW
             }
             
         }
+        public void StartSession2(CancellationToken token)
+        {
+            if (!(TraceEventSession.IsElevated() ?? false))
+            {
+                QueuedConsole.WriteLine("Please run me as Administrator!!");
+                return;
+            }
+            var stop = false;
+            bool doOnce = true;
+            var sessionName = "My_Reg_Trace";
+            QueuedConsole.WriteLine($"Starting rundown session: {sessionName}");
+            while (!stop)
+            {
+
+                using (TraceEventSession session = new TraceEventSession(sessionName))
+                {
+                    session.EnableKernelProvider(NTKeywords.Registry, NTKeywords.None);
+
+                    MakeKernelParserStateless(session.Source);
+                    session.Source.Kernel.RegistryKCBRundownBegin += KCBCreate;
+                    session.Source.Kernel.RegistryKCBRundownEnd += KCBCreate;
+                    session.Source.Kernel.RegistryKCBCreate += KCBCreate;
+                    session.Source.Kernel.RegistryKCBDelete += KCBDelete;
+                    //session.Source.Kernel.RegistryOpen += GeneralKeyCallBack;
+                    session.Source.Kernel.RegistrySetValue += GeneralValueCallBack;
+
+
+                    if (doOnce)
+                    {
+                        token.Register(() =>
+                        {
+                            QueuedConsole.WriteLine("RunDown stop!!");
+                            session.Stop();
+                            session.Dispose();
+                            Console.WriteLine("Publisher socket Disconnecting...");
+                            pubSocket.Dispose();
+                            stop = true;
+                        });
+                        doOnce = false;
+                    }
+
+                    timer = new Timer(delegate (object state)
+                    {
+                        QueuedConsole.WriteLine("Timer crontab exec!!");
+                        session.Stop();
+
+                    }, null, (int)(MonitorTimeInSeconds * 1000), Timeout.Infinite);
+
+
+                    session.Source.Process();
+                    //QueuedConsole.WriteLine("Session Stop!!");
+                }
+
+            }          
+
+        }
+
+        public async Task StartSession3(CancellationToken token)
+        {
+            if (!(TraceEventSession.IsElevated() ?? false))
+            {
+                QueuedConsole.WriteLine("Please run me as Administrator!!");
+                return;
+            }
+            var stop = false;
+            bool doOnce = true;
+            var sessionName = "My_Reg_Trace";
+            QueuedConsole.WriteLine($"Starting rundown session: {sessionName}");
+            while (!stop)
+            {
+
+                using (TraceEventSession session = new TraceEventSession(sessionName))
+                {
+                    session.EnableKernelProvider(NTKeywords.Registry, NTKeywords.None);
+
+                    MakeKernelParserStateless(session.Source);
+                    session.Source.Kernel.RegistryKCBRundownBegin += KCBCreate;
+                    session.Source.Kernel.RegistryKCBRundownEnd += KCBCreate;
+                    session.Source.Kernel.RegistryKCBCreate += KCBCreate;
+                    session.Source.Kernel.RegistryKCBDelete += KCBDelete;
+                    //session.Source.Kernel.RegistryOpen += GeneralKeyCallBack;
+                    session.Source.Kernel.RegistrySetValue += GeneralValueCallBack;
+
+
+                    if (doOnce)
+                    {
+                        token.Register(() =>
+                        {
+                            QueuedConsole.WriteLine("RunDown stop!!");
+                            session.Stop();
+                            session.Dispose();
+                            Console.WriteLine("Publisher socket Disconnecting...");
+                            pubSocket.Dispose();
+                            stop = true;
+                        });
+                        doOnce = false;
+                    }
+
+                    timer = new Timer(delegate (object state)
+                    {
+                        QueuedConsole.WriteLine("Timer crontab exec!!");
+                        session.Stop();
+
+                    }, null, (int)(MonitorTimeInSeconds * 1000), Timeout.Infinite);
+
+
+                    await Task.Run(() => session.Source.Process());
+                    //QueuedConsole.WriteLine("Session Stop!!");
+                }
+
+            }
+
+        }
+        public async Task StartSession4(CancellationToken token)
+        {
+            if (!(TraceEventSession.IsElevated() ?? false))
+            {
+                QueuedConsole.WriteLine("Please run me as Administrator!!");
+                return;
+            }
+
+            var sessionName = "My_Reg_Trace";
+            using (TraceEventSession session = new TraceEventSession(sessionName))
+            {
+                session.EnableKernelProvider(
+                    NTKeywords.Registry,
+                    NTKeywords.None
+                    );
+
+                MakeKernelParserStateless(session.Source);
+                
+                session.Source.Kernel.RegistryKCBCreate += KCBCreate;
+                session.Source.Kernel.RegistryKCBDelete += KCBDelete;
+                //session.Source.Kernel.RegistryOpen += GeneralKeyCallBack;
+                session.Source.Kernel.RegistrySetValue += GeneralValueCallBack;
+
+                token.Register(() => {
+                    session.Stop();
+                    Console.WriteLine("Publisher socket Disconnecting...");
+                    pubSocket.Dispose();
+                });
+
+
+                //Console.WriteLine(now.ToString("yyyy/MM/dd HH:mm:ss"));
+                /*
+                try
+                {
+                    await Task.Run(() => session.Source.Process());
+                }
+                catch (TaskCanceledException)
+                {
+                    Console.WriteLine("Session Cancelled!!");
+                }
+                */
+                await Task.Run(() => session.Source.Process());
+                
+                QueuedConsole.WriteLine("Session Stop!!");
+
+            }
+
+        }
+
 
     }
     class Test
@@ -767,24 +1068,28 @@ namespace CSharpETW
                     eventArgs.Cancel = true;
 
                 };
-
+                var sessionName = "My_Reg_Trace";
                 ETWTrace trace = new ETWTrace();
-
-                Task task = Task.Run(()=> trace.StartSession(cts.Token),cts.Token);
-                Thread.Sleep(1000);
-
-
-                //Stopwatch stopwatch = new Stopwatch();
-                //stopwatch.Start();
-                //Analysis As = new Analysis();
-                //Task as_task = Task.Run(() => As.StartAnalysis(cts.Token), cts.Token);
+                Task task = trace.StartSession4(cts.Token);
+                Task rundown_task = trace.RunDownSession2(sessionName + "_RunDown", cts.Token);
                 
+                //Task task = Task.Run(()=> trace.StartSession2(cts.Token),cts.Token);
+                Thread.Sleep(1000);
+                Console.WriteLine("DO OTHER THING");
+
+                
+                Stopwatch stopwatch = new Stopwatch();
+                stopwatch.Start();
+                Analysis As = new Analysis();
+                Task as_task = Task.Run(() => As.StartAnalysis(cts.Token), cts.Token);
+
                 /*do Testing here*/
                 //Test test = new Test();
                 //Task test_task = Task.Run(() => test.DoTesting(), cts.Token);
-                
+
                 task.Wait();
-                /*
+                rundown_task.Wait();
+                
                 as_task.Wait();
                 stopwatch.Stop();
                 long sum = 0;
@@ -794,7 +1099,7 @@ namespace CSharpETW
                 }
                 Console.WriteLine($"{stopwatch.Elapsed.TotalSeconds}");
                 Console.WriteLine($"average mem : {(double)(sum / stopwatch.Elapsed.TotalSeconds)}");
-                */
+                
                 if (OperatingSystem.IsWindows())
                 {
                     var registryKey = Registry.LocalMachine.OpenSubKey(@"Software\RegistryKeyTest");
