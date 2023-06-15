@@ -80,7 +80,7 @@ namespace CSharpETW
 
     class ETWTrace
     {
-        private static Dictionary<UInt64, String> KeyHandle2KeyName = new Dictionary<UInt64, String>() { };
+        private static Dictionary<ulong, string> KeyHandle2KeyName = new Dictionary<ulong, string>() { };
         // user info
         private static readonly string currentUserSid = OperatingSystem.IsWindows() ? WindowsIdentity.GetCurrent().User.Value : null;
         private static readonly int pid = Process.GetCurrentProcess().Id;
@@ -97,8 +97,8 @@ namespace CSharpETW
         // system process filter
         private static readonly List<string> trustedList = new List<string>() { 
             "svchost",
-            "System"
-            
+            "System",
+            "regedit"
         };
         private static readonly List<string> trustedFolder = new List<string>()
         {
@@ -111,6 +111,7 @@ namespace CSharpETW
             "reg",
             "powershell",
             "cmd"
+            
         };
         private readonly List<string> _certList = new List<string>();
             
@@ -123,17 +124,20 @@ namespace CSharpETW
             @"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run",
             @"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\RunOnce",
             @"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\RunOnceEx",
-             userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
-             userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+            userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+            userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
             @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
             @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
             @"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\RunServicesOnce",
-             userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\RunServicesOnce",
+            userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\RunServicesOnce",
             @"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\RunServices",
-             userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\RunServices",
+            userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\RunServices",
             @"HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager",
             @"HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
-             userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
+            userRegPath + @"\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
+            @"HKEY_LOCAL_MACHINE\Software\Microsoft\WindowsNT\CurrentVersion\Windows\AppInit_DLLs",
+            @"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+            userRegPath + @"\Environment\UserInitMprLogonScript"
         };
         private readonly List<string> builtInKey = new List<string>()
         {
@@ -305,7 +309,6 @@ namespace CSharpETW
                 
                 foreach (string folder in trustedFolder)
                 {
-
                     if (Regex.IsMatch(processPath, folder, RegexOptions.IgnoreCase))
                     {
                         flag = true;
@@ -315,8 +318,8 @@ namespace CSharpETW
             }
             else
             {
-               
-                return obj.ProcessID != pid && !trustedList.Contains(obj.ProcessName, StringComparer.OrdinalIgnoreCase);
+                return obj.ProcessID == pid;
+                //return obj.ProcessID != pid && !trustedList.Contains(obj.ProcessName, StringComparer.OrdinalIgnoreCase);
             }
 
 
@@ -523,10 +526,11 @@ namespace CSharpETW
             string processPath = null;
             // key filter
             bool key_flag = KeyFilter(fullKeyName);
-            if (builtInKey.Contains(fullKeyName, StringComparer.OrdinalIgnoreCase)){
+            if (builtInKey.Contains(fullKeyName, StringComparer.OrdinalIgnoreCase))
+            {
                 if (OperatingSystem.IsWindows())
                 {
-                    using (RegistryKey key = Registry.LocalMachine.OpenSubKey(fullKeyName.Substring("HKEY_LOCAL_MACHINE".Length + 1)))
+                    using (RegistryKey key = Registry.LocalMachine.OpenSubKey(fullKeyName.Substring("HKEY_LOCAL_MACHINE".Length + 1), RegistryKeyPermissionCheck.ReadWriteSubTree))
                     {
                         if (key == null)
                         {
@@ -1000,7 +1004,14 @@ namespace CSharpETW
         //do reg_muti_sz
         public void DoTesting2()
         {
-
+            if (OperatingSystem.IsWindows())
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft\Windows Defender", RegistryKeyPermissionCheck.ReadWriteSubTree))
+                {
+                    key.SetValue("DisableAntiSpyware",1);
+                }
+                
+            }
         }
         //Important key test
         public void DoTesting3()
@@ -1086,6 +1097,8 @@ namespace CSharpETW
                 /*do Testing here*/
                 //Test test = new Test();
                 //Task test_task = Task.Run(() => test.DoTesting(), cts.Token);
+                Test test = new Test();
+                test.DoTesting2();
 
                 task.Wait();
                 rundown_task.Wait();
